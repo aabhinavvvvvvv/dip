@@ -1,0 +1,641 @@
+================================================================================
+  PDC LAB - ALL ASSIGNMENTS
+  Compile commands at the bottom of each section.
+================================================================================
+
+
+
+
+================================================================================
+  ASSIGNMENT 1 — OpenMP: Floyd-Warshall All-Pairs Shortest Path using Tasks
+  File: openmp_floyd_warshall/floyd_warshall_omp.c
+  Compile: gcc -fopenmp -O2 -o floyd_warshall floyd_warshall_omp.c
+  Run:     OMP_NUM_THREADS=4 ./floyd_warshall
+           ./floyd_warshall s        (serial version)
+================================================================================
+
+/*
+ * Floyd-Warshall All-Pairs Shortest Path using OpenMP Tasks
+ *
+ * Parallelism strategy:
+ *   - Outer loop over k runs sequentially (each k depends on k-1 results).
+ *   - For each k, a single thread spawns tasks for every (i,j) pair.
+ *   - #pragma omp taskwait after each k ensures all updates finish
+ *     before the next intermediate vertex is processed.
+ *
+ * Why no race condition:
+ *   At step k, dist[i][k] and dist[k][j] are never modified by any task
+ *   (updating dist[k][j] would compute min(dist[k][j], dist[k][k]+dist[k][j])
+ *   = dist[k][j] since dist[k][k]=0), so reads are safe without locking.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <omp.h>
+
+#define INF 1e9
+#define MAX_V 100
+
+int V;
+double dist[MAX_V][MAX_V];
+
+void floyd_warshall_parallel() {
+    for (int k = 0; k < V; k++) {
+        #pragma omp parallel
+        {
+            #pragma omp single
+            {
+                for (int i = 0; i < V; i++) {
+                    for (int j = 0; j < V; j++) {
+                        #pragma omp task firstprivate(i, j)
+                        {
+                            double through_k = dist[i][k] + dist[k][j];
+                            if (through_k < dist[i][j])
+                                dist[i][j] = through_k;
+                        }
+                    }
+                }
+                #pragma omp taskwait
+            }
+        }
+    }
+}
+
+void floyd_warshall_serial() {
+    for (int k = 0; k < V; k++)
+        for (int i = 0; i < V; i++)
+            for (int j = 0; j < V; j++) {
+                double through_k = dist[i][k] + dist[k][j];
+                if (through_k < dist[i][j])
+                    dist[i][j] = through_k;
+            }
+}
+
+void print_matrix(const char *label) {
+    printf("\n%s:\n", label);
+    printf("     ");
+    for (int j = 0; j < V; j++) printf("%6d", j);
+    printf("\n     ");
+    for (int j = 0; j < V; j++) printf("------");
+    printf("\n");
+    for (int i = 0; i < V; i++) {
+        printf("%3d |", i);
+        for (int j = 0; j < V; j++) {
+            if (dist[i][j] >= INF)
+                printf("   INF");
+            else
+                printf("%6.0f", dist[i][j]);
+        }
+        printf("\n");
+    }
+}
+
+void load_sample_graph() {
+    V = 4;
+    for (int i = 0; i < V; i++)
+        for (int j = 0; j < V; j++)
+            dist[i][j] = (i == j) ? 0 : INF;
+
+    dist[0][1] =  3;
+    dist[0][3] =  7;
+    dist[1][2] =  2;
+    dist[2][0] = -4;
+    dist[3][1] =  1;
+    dist[3][2] =  2;
+}
+
+int main(int argc, char *argv[]) {
+    int use_parallel = 1;
+
+    if (argc > 1 && argv[1][0] == 's')
+        use_parallel = 0;
+
+    load_sample_graph();
+    print_matrix("Initial distance matrix");
+
+    double t_start = omp_get_wtime();
+
+    if (use_parallel) {
+        printf("\nRunning PARALLEL Floyd-Warshall with OpenMP tasks...\n");
+        floyd_warshall_parallel();
+    } else {
+        printf("\nRunning SERIAL Floyd-Warshall...\n");
+        floyd_warshall_serial();
+    }
+
+    double t_end = omp_get_wtime();
+
+    print_matrix("All-pairs shortest path matrix");
+    printf("\nTime taken : %.6f seconds\n", t_end - t_start);
+    printf("OMP threads: %d\n", omp_get_max_threads());
+
+    return 0;
+}
+
+
+
+
+================================================================================
+  ASSIGNMENT 2 — Pthreads Basics: Thread Creation, Termination, Shared Memory
+  Folder: pthread_basics/
+================================================================================
+
+--------------------------------------------------------------------------------
+  FILE: pthread_basics/code_7b.c
+  Topic: Basic thread creation with pthread_create and pthread_join
+  Compile: gcc -lpthread -o code_7b code_7b.c
+--------------------------------------------------------------------------------
+
+#include <stdio.h>
+#include <pthread.h>
+
+void* myThread(void* arg) {
+    printf("Hello from the new thread!\n");
+    return NULL;
+}
+
+int main() {
+    pthread_t thread;
+    pthread_create(&thread, NULL, myThread, NULL);
+    pthread_join(thread, NULL); // Wait for thread to finish
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: pthread_basics/code_7f.c
+  Topic: Explicit thread termination with pthread_exit and exit status retrieval
+  Compile: gcc -lpthread -o code_7f code_7f.c
+--------------------------------------------------------------------------------
+
+#include <stdio.h>
+#include <pthread.h>
+
+// Thread function
+void* thread_main(void* arg) {
+    printf("Thread is running.\n");
+    pthread_exit((void*) "Thread finished"); // Explicit termination
+}
+
+int main() {
+    pthread_t thread;
+    void* exit_status;
+
+    // Create a thread
+    pthread_create(&thread, NULL, thread_main, NULL);
+
+    // Wait for the thread to finish and retrieve its exit status
+    pthread_join(thread, &exit_status);
+
+    printf("Thread exited with message: %s\n", (char*)exit_status);
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: pthread_basics/code_8a.c
+  Topic: Two threads sharing a global variable (demonstrates shared address space)
+  Compile: gcc -lpthread -o code_8a code_8a.c
+--------------------------------------------------------------------------------
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
+
+int x = 2;
+
+void* routine(void* arg) {
+    x += 5;
+    sleep(2);
+    printf("Value of x: %d\n", x);
+    return NULL;
+}
+
+void* routine2(void* arg) {
+    sleep(2);
+    printf("Value of x: %d\n", x);
+    return NULL;
+}
+
+int main(int argc, char* argv[]) {
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, &routine, NULL);
+    pthread_create(&t2, NULL, &routine2, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: pthread_basics/code_8c.c
+  Topic: Shared variable + getpid() to confirm both threads share one process
+  Compile: gcc -lpthread -o code_8c code_8c.c
+--------------------------------------------------------------------------------
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
+
+int x = 2;
+
+void* routine(void* arg) {
+    x += 5;
+    sleep(2);
+    printf("Value of x: %d\n", x);
+    printf("Process Id: %d\n", getpid());
+    return NULL;
+}
+
+void* routine2(void* arg) {
+    sleep(2);
+    printf("Value of x: %d\n", x);
+    printf("Process Id: %d\n", getpid());
+    return NULL;
+}
+
+int main(int argc, char* argv[]) {
+    pthread_t t1, t2;
+    pthread_create(&t1, NULL, &routine, NULL);
+    pthread_create(&t2, NULL, &routine, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    return 0;
+}
+
+
+
+
+================================================================================
+  ASSIGNMENT 3 — Pthreads Advanced: Dynamic Memory, Factorials, Perfect Numbers
+  Folder: pthread_dynamic_memory/
+================================================================================
+
+--------------------------------------------------------------------------------
+  FILE: pthread_dynamic_memory/q1.c
+  Topic: 5 threads compute squares (1-5), malloc result, main sums via join
+  Compile: gcc -lpthread -o q1 q1.c
+--------------------------------------------------------------------------------
+
+/*
+ * Q1: 5 threads each compute the square of their assigned number (1-5).
+ * Each thread dynamically allocates memory for the result and returns it.
+ * Main collects results via pthread_join, sums them, and frees the memory.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define NUM_THREADS 5
+
+void* compute_square(void* arg) {
+    int n = *(int*)arg;
+    int* result = malloc(sizeof(int));
+    *result = n * n;
+    printf("Thread %d: %d^2 = %d\n", n, n, *result);
+    return result;
+}
+
+int main() {
+    pthread_t threads[NUM_THREADS];
+    int inputs[NUM_THREADS];
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        inputs[i] = i + 1;
+        pthread_create(&threads[i], NULL, compute_square, &inputs[i]);
+    }
+
+    int total = 0;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        int* result;
+        pthread_join(threads[i], (void**)&result);
+        total += *result;
+        free(result);
+    }
+
+    printf("\nSum of squares (1^2 + 2^2 + ... + 5^2) = %d\n", total);
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: pthread_dynamic_memory/q2.c
+  Topic: 10 threads compute factorial of each of first 10 primes, main sums
+  Compile: gcc -lpthread -o q2 q2.c
+--------------------------------------------------------------------------------
+
+/*
+ * Q2: 10 threads each compute the factorial of the prime number at their
+ * assigned index. Results are dynamically allocated and returned to main,
+ * which sums all factorials and prints the total.
+ *
+ * Each thread receives its own index copy to prevent race conditions from
+ * sharing a loop variable.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define NUM_THREADS 10
+
+int primes[NUM_THREADS] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29};
+
+unsigned long long factorial(int n) {
+    unsigned long long f = 1;
+    for (int i = 2; i <= n; i++)
+        f *= i;
+    return f;
+}
+
+void* compute_factorial(void* arg) {
+    int idx = *(int*)arg;
+    int p = primes[idx];
+    unsigned long long* result = malloc(sizeof(unsigned long long));
+    *result = factorial(p);
+    printf("Thread %2d: %2d! = %llu\n", idx, p, *result);
+    return result;
+}
+
+int main() {
+    pthread_t threads[NUM_THREADS];
+    int indices[NUM_THREADS];
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        indices[i] = i;
+        pthread_create(&threads[i], NULL, compute_factorial, &indices[i]);
+    }
+
+    unsigned long long total = 0;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        unsigned long long* result;
+        pthread_join(threads[i], (void**)&result);
+        total += *result;
+        free(result);
+    }
+
+    printf("\nSum of factorials of first 10 primes = %llu\n", total);
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: pthread_dynamic_memory/q3.c
+  Topic: 10 threads check perfect numbers, mutex-guarded counter, NULL returns
+  Compile: gcc -lpthread -o q3 q3.c
+--------------------------------------------------------------------------------
+
+/*
+ * Q3: 10 threads each check whether their assigned array element is a perfect
+ * number (equals the sum of its proper divisors).
+ *
+ * If perfect: dynamically allocate an int, store the value, return it.
+ * If not:     return NULL.
+ *
+ * A shared global counter tracks perfect numbers found; a mutex guards it
+ * to prevent race conditions.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#define NUM_THREADS 10
+
+int arr[NUM_THREADS] = {1, 6, 10, 28, 15, 496, 20, 100, 25, 8128};
+
+int perfect_count = 0;
+pthread_mutex_t count_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int is_perfect(int n) {
+    if (n < 2) return 0;
+    int sum = 1;
+    for (int i = 2; i * i <= n; i++) {
+        if (n % i == 0) {
+            sum += i;
+            if (i != n / i)
+                sum += n / i;
+        }
+    }
+    return sum == n;
+}
+
+void* check_perfect(void* arg) {
+    int idx = *(int*)arg;
+    int val = arr[idx];
+
+    if (is_perfect(val)) {
+        pthread_mutex_lock(&count_mutex);
+        perfect_count++;
+        pthread_mutex_unlock(&count_mutex);
+
+        int* result = malloc(sizeof(int));
+        *result = val;
+        printf("Thread %2d: %d is a PERFECT number\n", idx, val);
+        return result;
+    }
+
+    printf("Thread %2d: %d is not perfect\n", idx, val);
+    return NULL;
+}
+
+int main() {
+    pthread_t threads[NUM_THREADS];
+    int indices[NUM_THREADS];
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        indices[i] = i;
+        pthread_create(&threads[i], NULL, check_perfect, &indices[i]);
+    }
+
+    printf("\n--- Perfect numbers found ---\n");
+    for (int i = 0; i < NUM_THREADS; i++) {
+        int* result;
+        pthread_join(threads[i], (void**)&result);
+        if (result != NULL) {
+            printf("  %d\n", *result);
+            free(result);
+        }
+    }
+
+    printf("\nTotal perfect numbers found: %d\n", perfect_count);
+
+    pthread_mutex_destroy(&count_mutex);
+    return 0;
+}
+
+
+
+
+================================================================================
+  ASSIGNMENT 4 — MPI: Ping-Pong and Circular Message Exchange
+  Folder: mpi_message_passing/
+================================================================================
+
+--------------------------------------------------------------------------------
+  FILE: mpi_message_passing/q1.c
+  Topic: Ping-pong between 2 processes, message doubles from 64B to 10,000,000B
+  Compile: mpicc -o q1 q1.c
+  Run:     mpirun -np 2 ./q1
+--------------------------------------------------------------------------------
+
+/*
+ * Q1: Ping-Pong message transfer using MPI_Send and MPI_Recv.
+ *
+ * Two processes repeatedly exchange messages, doubling the size each
+ * time from 64 bytes until 10,000,000 bytes.
+ *
+ * Deadlock-free ordering:
+ *   Rank 0  ->  Send first, then Recv
+ *   Rank 1  ->  Recv first, then Send
+ *
+ * If both ranks Send before Recv (as shown in the commented block below
+ * for rank 1), both block on MPI_Send waiting for a receiver -> DEADLOCK.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "mpi.h"
+
+int main(int argc, char* argv[]) {
+    int numprocs, rank, tag = 100, msg_size = 64;
+    char* buf;
+    MPI_Status status;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
+
+    if (numprocs != 2) {
+        printf("The number of processes must be two!\n");
+        MPI_Finalize();
+        return 0;
+    }
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    printf("MPI process %d started...\n", rank);
+    fflush(stdout);
+
+    while (msg_size < 10000000) {
+        msg_size = msg_size * 2;
+        buf = (char*)malloc(msg_size * sizeof(char));
+
+        if (rank == 0) {
+            MPI_Send(buf, msg_size, MPI_BYTE, rank + 1, tag, MPI_COMM_WORLD);
+            printf("Message of length %d to process %d\n", msg_size, rank + 1);
+            fflush(stdout);
+            MPI_Recv(buf, msg_size, MPI_BYTE, rank + 1, tag, MPI_COMM_WORLD,
+                     &status);
+        }
+
+        if (rank == 1) {
+            /*
+             * DEADLOCK-PRONE ordering (both ranks send before receiving):
+             *
+             * MPI_Send(buf, msg_size, MPI_BYTE, rank-1, tag, MPI_COMM_WORLD);
+             * MPI_Recv(buf, msg_size, MPI_BYTE, rank-1, tag, MPI_COMM_WORLD,
+             *          &status);
+             */
+
+            /* Deadlock-free: Recv first, then Send */
+            MPI_Recv(buf, msg_size, MPI_BYTE, rank - 1, tag, MPI_COMM_WORLD,
+                     &status);
+            MPI_Send(buf, msg_size, MPI_BYTE, rank - 1, tag, MPI_COMM_WORLD);
+            printf("Message of length %d to process %d\n", msg_size, rank - 1);
+            fflush(stdout);
+        }
+
+        free(buf);
+    }
+
+    MPI_Finalize();
+    return 0;
+}
+
+--------------------------------------------------------------------------------
+  FILE: mpi_message_passing/q2.c
+  Topic: Circular ring exchange among 3 processes, message doubles to 1,000,000B
+  Compile: mpicc -o q2 q2.c
+  Run:     mpirun -np 3 ./q2
+--------------------------------------------------------------------------------
+
+/*
+ * Q2: Circular message exchange among 3 processes.
+ *
+ * Ring topology:  Process 0 -> Process 1 -> Process 2 -> Process 0
+ *
+ * Message size doubles each iteration starting from 1 byte until it
+ * reaches 1,000,000 bytes.
+ *
+ * Deadlock-free ordering (one process must recv before the ring can move):
+ *   Process 0  ->  Send to 1,   then Recv from 2
+ *   Process 1  ->  Recv from 0, then Send to 2
+ *   Process 2  ->  Recv from 1, then Send to 0
+ *
+ * If all three send before receiving, every MPI_Send blocks waiting for
+ * a matching Recv -> circular deadlock.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "mpi.h"
+
+int main(int argc, char* argv[]) {
+    int numprocs, rank, tag = 200;
+    int msg_size = 1;
+    char* buf;
+    MPI_Status status;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
+
+    if (numprocs != 3) {
+        if (rank == 0)
+            printf("This program requires exactly 3 processes.\n");
+        MPI_Finalize();
+        return 0;
+    }
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    printf("MPI process %d started\n", rank);
+    fflush(stdout);
+
+    int next = (rank + 1) % 3;   /* neighbour to send to   */
+    int prev = (rank + 2) % 3;   /* neighbour to recv from */
+
+    while (msg_size <= 1000000) {
+        buf = (char*)malloc(msg_size * sizeof(char));
+        memset(buf, rank, msg_size);
+
+        if (rank == 0) {
+            /* Send first so the ring starts moving */
+            MPI_Send(buf, msg_size, MPI_BYTE, next, tag, MPI_COMM_WORLD);
+            printf("Process 0: sent  %7d bytes to   Process 1\n", msg_size);
+            fflush(stdout);
+
+            MPI_Recv(buf, msg_size, MPI_BYTE, prev, tag, MPI_COMM_WORLD, &status);
+            printf("Process 0: recvd %7d bytes from Process 2\n", msg_size);
+            fflush(stdout);
+        } else {
+            /* Processes 1 and 2 receive first to avoid deadlock */
+            MPI_Recv(buf, msg_size, MPI_BYTE, prev, tag, MPI_COMM_WORLD, &status);
+            printf("Process %d: recvd %7d bytes from Process %d\n",
+                   rank, msg_size, prev);
+            fflush(stdout);
+
+            MPI_Send(buf, msg_size, MPI_BYTE, next, tag, MPI_COMM_WORLD);
+            printf("Process %d: sent  %7d bytes to   Process %d\n",
+                   rank, msg_size, next);
+            fflush(stdout);
+        }
+
+        free(buf);
+        msg_size *= 2;
+    }
+
+    MPI_Finalize();
+    return 0;
+}
+
+
+================================================================================
+  END OF ALL ASSIGNMENTS
+================================================================================
